@@ -1,0 +1,17 @@
+# LinkedIn content searches to run. Keep this short — 1-2 per run to stay
+# under the radar on your real account.
+#
+# `url` is a LinkedIn content search results URL. Grab it from the browser:
+# search -> Posts tab -> copy the address bar.
+searches:
+  - name: hiring-remote-swe
+    url: "https://www.linkedin.com/search/results/content/?keywords=hiring%20software%20engineer%20remote&origin=GLOBAL_SEARCH_HEADER&datePosted=%5B%22past-week%22%5D"
+
+# Scroll/load behavior. "5 scrolls" from the original spec was a proxy for
+# "load enough posts" — these adaptive limits replace it.
+load:
+  target_posts: 50        # stop once this many posts are captured for a search
+  max_iterations: 8       # hard cap on scroll/show-more cycles
+  dry_scrolls_to_stop: 2  # stop early after this many cycles add nothing new
+  min_wait_ms: 2500       # jittered wait between scrolls
+  max_wait_ms: 5000

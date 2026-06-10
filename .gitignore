@@ -1,0 +1,16 @@
+# Private data — lives in a SEPARATE private repo cloned into data/.
+# Never commit scraped posts, the DB, HTML, or Voyager captures to this public repo.
+/data/
+
+# Persistent browser profile holds your live LinkedIn session — never commit.
+/profile/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.python-version
+
+# OS
+.DS_Store
