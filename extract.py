@@ -1,8 +1,9 @@
-"""Turn captured Voyager JSON (primary) or saved HTML (fallback) into post dicts.
+"""Turn captured RSC / server-driven-UI payloads into post dicts.
 
-LinkedIn's Voyager payloads are undocumented and drift. The shapes below are
-written defensively: we walk the JSON looking for objects that carry an
-activity URN plus actor/commentary, rather than assuming fixed key paths. When
+LinkedIn migrated content search off the old Voyager JSON API to React Server
+Components. The payloads are undocumented and drift; the parser below keys off
+stable *semantic* anchors (fsd_update urns, feed-commentary refs, actorName
+records) rather than the per-response chunk ids, which are not stable. When
 LinkedIn changes things, debug against the raw captures saved in
 data/artifacts/ — do NOT re-scrape to iterate on the parser.
 """
@@ -10,9 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Iterable
-
-ACTIVITY_URN = re.compile(r"urn:li:activity:\d+")
 
 
 def post_url(urn: str) -> str:
@@ -20,120 +18,155 @@ def post_url(urn: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Voyager JSON (primary)
+# RSC / SDUI (primary, since LinkedIn migrated content search off Voyager)
 # ---------------------------------------------------------------------------
-
-def _walk(obj) -> Iterable[dict]:
-    """Yield every dict nested anywhere in a JSON structure."""
-    if isinstance(obj, dict):
-        yield obj
-        for v in obj.values():
-            yield from _walk(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from _walk(v)
-
-
-def _first_str(d: dict, *keys) -> str | None:
-    """Best-effort: pull a string out of common LinkedIn text wrappers."""
-    for k in keys:
-        v = d.get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-        if isinstance(v, dict):
-            # text nodes look like {"text": "..."} or {"text": {"text": "..."}}
-            inner = v.get("text")
-            if isinstance(inner, str) and inner.strip():
-                return inner.strip()
-            if isinstance(inner, dict) and isinstance(inner.get("text"), str):
-                return inner["text"].strip()
-    return None
+# Content search now renders via React Server Components + server-driven UI.
+# Results arrive two ways: the initial SSR page embeds the flight as a JS array
+# of JSON-escaped strings (window.__como_rehydration__), and each scroll fetches
+# a raw flight payload from /flagship-web/rsc-action/actions/pagination. Both
+# decode to the same flight format, parsed here. Anchors used (stable across the
+# unstable per-response chunk ids):
+#   urn:li:fsd_update:(urn:li:activity:N,...)  — one per post, in render order
+#   feed-commentary_<uuid> ... "children":"$L<id>"  — ref to the post body chunk
+#   "actorName":"..." ... "activityId":"N" ... "postSlugUrl":"..."  — author+url
+FSD_UPDATE = re.compile(r"urn:li:fsd_update:\(urn:li:activity:(\d+)")
+COMMENTARY = re.compile(r'feed-commentary_[0-9a-f-]+".*?"children":"(\$L?[0-9a-f]+)"', re.S)
+ACTOR = re.compile(
+    r'"actorName":"((?:[^"\\]|\\.)*)".{0,400}?"activityId":"(\d+)"'
+    r'.{0,400}?"postSlugUrl":"((?:[^"\\]|\\.)*)"',
+    re.S,
+)
 
 
-def from_voyager(payloads: list[dict]) -> list[dict]:
-    """Extract posts from a list of parsed Voyager JSON response bodies."""
+def _rsc_unescape(s: str) -> str:
+    try:
+        return json.loads('"' + s + '"')
+    except (json.JSONDecodeError, ValueError):
+        return s
+
+
+def _flight_from_html(html: str) -> str:
+    """The SSR page embeds flight as `window.__como_rehydration__ = ["1:I[...", ...]`
+    — a JS array of JSON-escaped strings. Decode and join back to raw flight."""
+    i = html.find("__como_rehydration__")
+    if i < 0:
+        return ""
+    start = html.find("[", i)
+    if start < 0:
+        return ""
+    depth, j, in_str, esc = 0, start, False, False
+    while j < len(html):
+        c = html[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                break
+        j += 1
+    try:
+        parts = json.loads(html[start:j + 1])
+        return "".join(p for p in parts if isinstance(p, str))
+    except (json.JSONDecodeError, ValueError):
+        return ""
+
+
+def _flight_chunks(flight: str) -> dict:
+    """Map flight chunk id -> parsed JSON value (array/object chunks only)."""
+    out: dict[str, object] = {}
+    for line in flight.split("\n"):
+        m = re.match(r"^([0-9a-f]+):(.*)$", line, re.S)
+        if m and m.group(2)[:1] in ("[", "{"):
+            try:
+                out[m.group(1)] = json.loads(m.group(2))
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return out
+
+
+def _collect_text(node, chunks: dict, seen=None, depth=0) -> list:
+    """Walk a resolved flight node, returning ordered text fragments and
+    resolving '$L<id>'/'$<id>' references against the chunk map."""
+    if seen is None:
+        seen = set()
+    if depth > 60:
+        return []
+    out: list[str] = []
+    if isinstance(node, str):
+        if node.startswith("$L") or re.fullmatch(r"\$[0-9a-f]+", node or ""):
+            ref = node[2:] if node.startswith("$L") else node[1:]
+            if ref in chunks and ref not in seen:
+                seen.add(ref)
+                out += _collect_text(chunks[ref], chunks, seen, depth + 1)
+        elif not node.startswith("$"):
+            out.append(node)
+    elif isinstance(node, list):
+        if len(node) == 4 and node[0] == "$":  # React element ["$", type, key, props]
+            if node[1] == "br":
+                out.append("\n")
+            out += _collect_text(node[3], chunks, seen, depth + 1)
+        else:
+            for it in node:
+                out += _collect_text(it, chunks, seen, depth + 1)
+    elif isinstance(node, dict):
+        # Follow only content-bearing keys, so we skip classNames/style/enums.
+        for key in ("textProps", "children", "text", "placeholder", "title"):
+            if key in node:
+                out += _collect_text(node[key], chunks, seen, depth + 1)
+    return out
+
+
+def from_rsc(raw: str) -> list[dict]:
+    """Extract posts from one RSC payload (SSR HTML page or pagination flight)."""
+    flight = raw if ("fsd_update" in raw and not raw.lstrip().startswith("<")) else _flight_from_html(raw)
+    if not flight:
+        return []
+    chunks = _flight_chunks(flight)
+    ids = [m.group(1) for m in FSD_UPDATE.finditer(flight)]              # render order
+    body_refs = list(dict.fromkeys(m.group(1) for m in COMMENTARY.finditer(flight)))
+    actor = {m.group(2): (_rsc_unescape(m.group(1)), _rsc_unescape(m.group(3)))
+             for m in ACTOR.finditer(flight)}
+    posts = []
+    for i, aid in enumerate(ids):
+        urn = f"urn:li:activity:{aid}"
+        text = ""
+        if i < len(body_refs):
+            ref = body_refs[i]
+            rid = ref[2:] if ref.startswith("$L") else ref[1:]
+            text = re.sub(r"\n{3,}", "\n\n",
+                          "".join(_collect_text(chunks.get(rid, ""), chunks))).strip()
+        author, url = actor.get(aid, (None, post_url(urn)))
+        posts.append({"urn": urn, "author": author, "headline": None,
+                      "text": text, "posted_at": None, "url": url})
+    return posts
+
+
+def from_rsc_many(payloads: list[str]) -> list[dict]:
+    """Extract + dedupe posts across many captured RSC payloads."""
     out: dict[str, dict] = {}
-    for payload in payloads:
-        for node in _walk(payload):
-            urn = _find_activity_urn(node)
-            if not urn:
-                continue
-            text = _first_str(node, "commentary", "text", "summary")
-            actor = node.get("actor") if isinstance(node.get("actor"), dict) else {}
-            author = _first_str(actor, "name", "title") if actor else None
-            headline = _first_str(actor, "description", "subtitle") if actor else None
-            posted = _first_str(actor, "subDescription") if actor else None
-            # Only keep nodes that actually look like a post (have text or actor).
-            if not (text or author):
-                continue
-            out.setdefault(
-                urn,
-                {
-                    "urn": urn,
-                    "author": author,
-                    "headline": headline,
-                    "text": text,
-                    "posted_at": posted,
-                    "url": post_url(urn),
-                },
-            )
+    for raw in payloads:
+        for p in from_rsc(raw):
+            if p["text"] or p["author"]:
+                out.setdefault(p["urn"], p)
     return list(out.values())
 
 
-def _find_activity_urn(node: dict) -> str | None:
-    for key in ("entityUrn", "*socialDetail", "updateMetadata", "backendUrn", "preDashEntityUrn"):
-        v = node.get(key)
-        if isinstance(v, str):
-            m = ACTIVITY_URN.search(v)
-            if m:
-                return m.group(0)
-    # last resort: any string field on this node carrying an activity urn
-    for v in node.values():
-        if isinstance(v, str):
-            m = ACTIVITY_URN.search(v)
-            if m:
-                return m.group(0)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# HTML (fallback / audit reparse)
-# ---------------------------------------------------------------------------
-
-def from_html(html: str) -> list[dict]:
-    from bs4 import BeautifulSoup
-
-    soup = BeautifulSoup(html, "html.parser")
-    out: dict[str, dict] = {}
-    for div in soup.select("[data-urn]"):
-        urn = div.get("data-urn", "")
-        if not ACTIVITY_URN.fullmatch(urn or ""):
-            continue
-
-        def _text(sel):
-            el = div.select_one(sel)
-            return el.get_text(" ", strip=True) if el else None
-
-        out.setdefault(
-            urn,
-            {
-                "urn": urn,
-                "author": _text(".update-components-actor__title"),
-                "headline": _text(".update-components-actor__description"),
-                "text": _text(".update-components-text"),
-                "posted_at": _text(".update-components-actor__sub-description"),
-                "url": post_url(urn),
-            },
-        )
-    return list(out.values())
-
-
-def load_voyager_files(paths: list[str]) -> list[dict]:
-    payloads = []
+def load_rsc_files(paths: list[str]) -> list[str]:
+    """Load raw RSC payload captures (one payload per file) for offline reparse."""
+    out = []
     for p in paths:
         try:
             with open(p, encoding="utf-8") as fh:
-                payloads.append(json.load(fh))
-        except (json.JSONDecodeError, OSError):
+                out.append(fh.read())
+        except OSError:
             continue
-    return payloads
+    return out

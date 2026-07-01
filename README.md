@@ -1,8 +1,9 @@
 # linkedin-job-collector
 
 Personal job-hunt tool: scrolls a LinkedIn **content search**, captures the
-posts (via the page's internal Voyager JSON), dedupes them into SQLite, and
-emits a Claude-filtered digest of genuine remote-SWE hiring posts.
+posts (from the page's React Server Components / server-driven-UI payloads),
+dedupes them into SQLite, emits a Claude-filtered digest of genuine remote-SWE
+hiring posts, and emails you when new ones match.
 
 > **This repo holds code only.** Scraped posts, the SQLite DB, and raw HTML/JSON
 > captures live in a **separate private repo** cloned into `data/` (gitignored).
@@ -13,16 +14,18 @@ emits a Claude-filtered digest of genuine remote-SWE hiring posts.
 
 ```
 linkedin-job-collector/        # this repo (public, code only)
-├── bot.py            # orchestration: scroll, capture, store, digest
-├── extract.py        # Voyager JSON -> posts (HTML fallback)
+├── bot.py            # orchestration: scroll, capture, store, digest, notify
+├── extract.py        # RSC/SDUI payloads -> posts
 ├── store.py          # SQLite (schema is the durable contract)
 ├── digest.py         # claude -p filter -> ranked digest.md
+├── notify.py         # email new matches / re-auth alerts (SMTP)
 ├── searches.yaml     # which searches to run + scroll limits
-├── prompts/filter.md # the filter prompt
+├── prompts/filter.md # the filter prompt (your match criteria)
+├── deploy/           # launchd job + run.sh wrapper for scheduling
 ├── profile/          # persistent Chromium profile (gitignored — holds your session)
 └── data/             # ← private repo cloned here (gitignored)
     ├── posts.db
-    ├── artifacts/<ts>/*.html, *.voyager.json
+    ├── artifacts/<ts>/*.rsc-*.txt
     └── digest-<ts>.md
 ```
 
@@ -106,6 +109,7 @@ launchctl unload ~/Library/LaunchAgents/com.bath.linkedin-job-collector.plist
 ## Account safety
 
 Runs against your real account, so it stays conservative: headed browser,
-persistent profile, jittered waits, 1–2 searches per run, 1–2 runs/day. Selector
-and Voyager-shape drift is expected — debug the parser against saved captures in
-`data/artifacts/`, don't re-scrape to iterate.
+persistent profile, jittered waits, 1–2 searches per run, a few runs/week.
+RSC/SDUI payload drift is expected — when extraction breaks, debug `extract.py`
+against the raw captures saved in `data/artifacts/<ts>/*.rsc-*.txt`
+(`python bot.py --reparse data/artifacts/<ts>`); don't re-scrape to iterate.

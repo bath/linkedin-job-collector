@@ -16,8 +16,8 @@ automates login, and waits at the login wall for you to sign in by hand.
 from __future__ import annotations
 
 import argparse
-import json
 import random
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -34,9 +34,12 @@ ARTIFACTS = DATA / "artifacts"
 PROFILE = ROOT / "profile"
 DB_PATH = DATA / "posts.db"
 
-# Voyager endpoints that carry content-search results. LinkedIn moves these;
-# we match loosely on substrings and keep every body that parses as JSON.
-VOYAGER_HINTS = ("/voyager/api/graphql", "/voyager/api/search", "search/dash/clusters")
+# Content-search results now arrive as React Server Components / server-driven UI
+# (LinkedIn migrated off Voyager). Two carriers: the initial SSR document at
+# /search/results/content/ (flight embedded in the HTML) and each scroll's
+# pagination fetch. We keep response bodies that carry post updates. See
+# extract.from_rsc for the format. LinkedIn moves these — match loosely.
+RSC_HINTS = ("/search/results/content/", "rsc-action/actions/pagination")
 
 
 def _ts() -> str:
@@ -91,13 +94,14 @@ def wait_for_login(page, unattended: bool = False) -> None:
 def scrape_search(
     page, search: dict, load: dict, artifact_dir: Path, unattended: bool = False
 ) -> list[dict]:
-    captured: list[dict] = []
+    captured: list[str] = []
 
     def on_response(resp):
         try:
-            if any(h in resp.url for h in VOYAGER_HINTS):
-                body = resp.json()
-                captured.append(body)
+            if any(h in resp.url for h in RSC_HINTS):
+                body = resp.text()
+                if "fsd_update" in body or "actorName" in body:
+                    captured.append(body)
         except Exception:
             pass  # non-JSON, streamed, or aborted — ignore
 
@@ -105,20 +109,26 @@ def scrape_search(
     print(f"[{search['name']}] navigating")
     page.goto(search["url"], wait_until="domcontentloaded")
     wait_for_login(page, unattended=unattended)
+
+    # Content-search results load lazily, several seconds behind domcontentloaded
+    # (worst on the first cold hit right after login). Give the results list a
+    # chance to render before scrolling, so we don't bail on an empty shell.
+    # Selector drift is expected — this is best-effort, not required.
+    try:
+        page.wait_for_selector(
+            "div.search-results-container, .scaffold-finite-scroll__content, "
+            "div.search-results__list, ul[role='list'] li",
+            timeout=load.get("results_wait_ms", 20000),
+        )
+    except Exception:
+        pass
     _jitter(load["min_wait_ms"], load["max_wait_ms"])
 
     seen_count = 0
     dry = 0
     for i in range(load["max_iterations"]):
-        # Expand truncated post bodies so HTML fallback captures full text.
-        for btn in page.query_selector_all(
-            "button.feed-shared-inline-show-more-text__see-more-less-toggle"
-        ):
-            try:
-                btn.click(timeout=500)
-            except Exception:
-                pass
-
+        # Each scroll triggers a pagination fetch (~3 posts). Full post text is
+        # in the payload, so no need to click "see more" on individual posts.
         page.mouse.wheel(0, 4000)
         _jitter(load["min_wait_ms"], load["max_wait_ms"])
 
@@ -131,32 +141,34 @@ def scrape_search(
             except Exception:
                 pass
 
-        posts = extract.from_voyager(captured)
+        posts = extract.from_rsc_many(captured)
         print(f"  scroll {i + 1}/{load['max_iterations']}: {len(posts)} posts captured")
         if len(posts) >= load["target_posts"]:
             break
         if len(posts) == seen_count:
-            dry += 1
-            if dry >= load["dry_scrolls_to_stop"]:
-                print("  no new posts; stopping early")
-                break
+            # Don't count "dry" scrolls until at least one post has appeared —
+            # otherwise a slow first render trips the early-stop before any
+            # results exist. Once posts are in, a flat count means we're done.
+            if seen_count > 0:
+                dry += 1
+                if dry >= load["dry_scrolls_to_stop"]:
+                    print("  no new posts; stopping early")
+                    break
         else:
             dry = 0
         seen_count = len(posts)
 
     page.remove_listener("response", on_response)
 
-    # Persist raw artifacts for offline reparse / audit trail.
+    # Persist raw RSC captures for offline reparse / audit trail (one per file).
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / f"{search['name']}.html").write_text(page.content(), encoding="utf-8")
-    (artifact_dir / f"{search['name']}.voyager.json").write_text(
-        json.dumps(captured), encoding="utf-8"
-    )
+    for idx, body in enumerate(captured):
+        (artifact_dir / f"{search['name']}.rsc-{idx:02d}.txt").write_text(body, encoding="utf-8")
 
-    posts = extract.from_voyager(captured)
+    posts = extract.from_rsc_many(captured)
     if not posts:
-        print("  voyager yielded nothing; falling back to HTML parse")
-        posts = extract.from_html(page.content())
+        print("  RSC yielded nothing; saving page HTML for debugging")
+        (artifact_dir / f"{search['name']}.debug.html").write_text(page.content(), encoding="utf-8")
     return posts
 
 
@@ -165,14 +177,13 @@ def reparse(artifact_subdir: str) -> None:
     d = Path(artifact_subdir)
     store = Store(DB_PATH)
     total_new = 0
-    for vf in d.glob("*.voyager.json"):
-        name = vf.name.replace(".voyager.json", "")
-        payloads = extract.load_voyager_files([str(vf)])
-        posts = extract.from_voyager(payloads)
-        if not posts:
-            html = (d / f"{name}.html")
-            if html.exists():
-                posts = extract.from_html(html.read_text(encoding="utf-8"))
+    # Group RSC captures by search name (e.g. hiring-remote-swe.rsc-00.txt).
+    by_search: dict[str, list[str]] = {}
+    for rf in sorted(d.glob("*.rsc-*.txt")):
+        name = re.sub(r"\.rsc-\d+\.txt$", "", rf.name)
+        by_search.setdefault(name, []).append(str(rf))
+    for name, paths in by_search.items():
+        posts = extract.from_rsc_many(extract.load_rsc_files(paths))
         for p in posts:
             if store.upsert(p, name):
                 total_new += 1
