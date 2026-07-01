@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS posts (
     url            TEXT,
     search_name    TEXT,               -- which searches.yaml entry surfaced it
     first_seen     TEXT NOT NULL,      -- ISO8601 UTC, when we first captured it
-    digest_verdict TEXT                -- filled by digest.py: kept | dropped | NULL (unjudged)
+    digest_verdict TEXT,               -- filled by digest.py: kept | dropped | NULL (unjudged)
+    notified_at    TEXT                -- ISO8601 UTC when a kept post was emailed; NULL = not yet
 );
 """
 
@@ -35,7 +36,14 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns to DBs created before they existed. Idempotent."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(posts)")}
+        if "notified_at" not in cols:
+            self.conn.execute("ALTER TABLE posts ADD COLUMN notified_at TEXT")
 
     def upsert(self, post: dict, search_name: str) -> bool:
         """Insert a post if its URN is new. Returns True if newly inserted."""
@@ -70,6 +78,21 @@ class Store:
     def set_verdict(self, urn: str, verdict: str) -> None:
         self.conn.execute(
             "UPDATE posts SET digest_verdict = ? WHERE urn = ?", (verdict, urn)
+        )
+        self.conn.commit()
+
+    def kept_unnotified(self) -> list[sqlite3.Row]:
+        """Kept posts we haven't emailed yet. Drives the notification step, so a
+        run whose email failed retries on the next run instead of losing the hit."""
+        return self.conn.execute(
+            "SELECT * FROM posts "
+            "WHERE digest_verdict = 'kept' AND notified_at IS NULL "
+            "ORDER BY first_seen"
+        ).fetchall()
+
+    def mark_notified(self, urn: str) -> None:
+        self.conn.execute(
+            "UPDATE posts SET notified_at = ? WHERE urn = ?", (_now(), urn)
         )
         self.conn.commit()
 

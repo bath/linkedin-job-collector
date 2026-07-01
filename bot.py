@@ -61,11 +61,26 @@ def ensure_data_repo() -> None:
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
 
-def wait_for_login(page) -> None:
-    """If we hit the auth wall, leave the window open and wait for the user."""
+class LoginRequired(Exception):
+    """Raised in unattended mode when the session has expired and a human must
+    sign in. Lets main() email a re-auth alert and exit cleanly."""
+
+
+def _at_login_wall(page) -> bool:
+    url = page.url
+    return "/login" in url or "/checkpoint" in url or "/authwall" in url
+
+
+def wait_for_login(page, unattended: bool = False) -> None:
+    """Handle the auth wall. Interactive: leave the window open and wait for the
+    user to sign in. Unattended (scheduled): don't hang for 10 minutes on a dead
+    session — raise so the caller can email a re-auth alert and exit."""
+    if unattended:
+        if _at_login_wall(page):
+            raise LoginRequired
+        return
     for _ in range(120):  # up to ~10 min
-        url = page.url
-        if "/login" in url or "/checkpoint" in url or "/authwall" in url:
+        if _at_login_wall(page):
             print("  -> login required. Sign in in the browser window; waiting...")
             _jitter(5000, 5000)
             continue
@@ -73,7 +88,9 @@ def wait_for_login(page) -> None:
     sys.exit("login not completed in time; aborting.")
 
 
-def scrape_search(page, search: dict, load: dict, artifact_dir: Path) -> list[dict]:
+def scrape_search(
+    page, search: dict, load: dict, artifact_dir: Path, unattended: bool = False
+) -> list[dict]:
     captured: list[dict] = []
 
     def on_response(resp):
@@ -87,7 +104,7 @@ def scrape_search(page, search: dict, load: dict, artifact_dir: Path) -> list[di
     page.on("response", on_response)
     print(f"[{search['name']}] navigating")
     page.goto(search["url"], wait_until="domcontentloaded")
-    wait_for_login(page)
+    wait_for_login(page, unattended=unattended)
     _jitter(load["min_wait_ms"], load["max_wait_ms"])
 
     seen_count = 0
@@ -167,6 +184,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-digest", action="store_true", help="skip the claude filter step")
     ap.add_argument("--reparse", metavar="DIR", help="rebuild from a saved artifacts dir, no scraping")
+    ap.add_argument(
+        "--unattended",
+        action="store_true",
+        help="scheduled mode: don't wait at the login wall — email a re-auth alert and exit",
+    )
     args = ap.parse_args()
 
     if args.reparse:
@@ -181,8 +203,11 @@ def main() -> None:
 
     from playwright.sync_api import sync_playwright
 
+    import notify
+
     store = Store(DB_PATH)
     total_new = 0
+    login_required = False
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(
             str(PROFILE),
@@ -190,13 +215,22 @@ def main() -> None:
             viewport={"width": 1280, "height": 900},
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        for search in cfg["searches"]:
-            posts = scrape_search(page, search, load, artifact_dir)
-            new = sum(1 for p in posts if store.upsert(p, search["name"]))
-            total_new += new
-            print(f"[{search['name']}] {len(posts)} posts, {new} new")
-            _jitter(load["min_wait_ms"], load["max_wait_ms"])
+        try:
+            for search in cfg["searches"]:
+                posts = scrape_search(page, search, load, artifact_dir, unattended=args.unattended)
+                new = sum(1 for p in posts if store.upsert(p, search["name"]))
+                total_new += new
+                print(f"[{search['name']}] {len(posts)} posts, {new} new")
+                _jitter(load["min_wait_ms"], load["max_wait_ms"])
+        except LoginRequired:
+            login_required = True
+            print("session expired; unattended run aborting. Sending re-auth alert.")
         ctx.close()
+
+    if login_required:
+        notify.send_reauth_alert()
+        store.close()
+        sys.exit(75)  # EX_TEMPFAIL: nothing scraped, retry after a manual login
 
     print(f"\nstored {total_new} new posts; artifacts -> {artifact_dir}")
 
@@ -204,6 +238,12 @@ def main() -> None:
         from digest import run_digest
 
         run_digest(store, DATA, ts)
+
+    # Always attempt notification: emails kept posts not yet sent, including any
+    # left pending by an earlier failed send. No-ops when there's nothing new.
+    sent = notify.notify_new_matches(store)
+    if sent:
+        print(f"notify: emailed {sent} new match(es)")
     store.close()
 
 

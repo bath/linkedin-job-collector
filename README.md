@@ -55,6 +55,54 @@ Then commit the new data in the private repo:
 cd data && git add -A && git commit -m "run <ts>" && git push
 ```
 
+## Your criteria live in the filter prompt
+
+What counts as a match is decided entirely by `prompts/filter.md` — the `claude -p`
+filter reads it and returns which posts to keep. Tighten it to your exact "I'd DM
+this recruiter" bar (role, seniority, comp signals, keywords, red flags). The
+narrower the prompt, the fewer false-positive emails.
+
+## Email notifications
+
+When the filter keeps a post you haven't been emailed about, you get an email with
+the author, headline, a text snippet, and the post URL — so you can open it and DM
+the recruiter. Each kept post is emailed **once** (tracked by `notified_at` in the
+DB); a run whose send fails retries on the next run.
+
+One-time setup — Gmail app password (any SMTP host works via the overrides):
+
+```sh
+cp .env.example .env
+# Create an app password: https://myaccount.google.com/apppasswords (needs 2FA)
+# then fill in LJC_SMTP_USER / LJC_SMTP_PASS / LJC_EMAIL_TO in .env
+```
+
+`.env` is gitignored. `python bot.py` picks it up automatically if you `source` it,
+but for manual runs you can also just `export` the vars. Scheduled runs load it via
+`deploy/run.sh`.
+
+## Scheduling (macOS, Mon/Wed/Fri)
+
+Runs unattended on a schedule. If the LinkedIn session has expired, `--unattended`
+doesn't hang at the login wall — it emails you a "re-auth needed" alert and exits;
+run `python bot.py` by hand once to sign in, and scheduled runs resume.
+
+```sh
+# 1. point the job at this repo and install it
+sed "s#__REPO__#$PWD#g" deploy/com.bath.linkedin-job-collector.plist \
+  > ~/Library/LaunchAgents/com.bath.linkedin-job-collector.plist
+
+# 2. load it (LaunchAgent = runs in your GUI session, so the headed browser opens)
+launchctl load ~/Library/LaunchAgents/com.bath.linkedin-job-collector.plist
+
+# run it once now to check wiring; logs -> /tmp/linkedin-job-collector.*.log
+launchctl start com.bath.linkedin-job-collector
+
+# change cadence: edit StartCalendarInterval in the plist (Weekday 1=Mon…5=Fri),
+# then unload + reload. To stop scheduling:
+launchctl unload ~/Library/LaunchAgents/com.bath.linkedin-job-collector.plist
+```
+
 ## Account safety
 
 Runs against your real account, so it stays conservative: headed browser,
