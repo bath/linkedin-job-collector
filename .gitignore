@@ -5,6 +5,9 @@
 # Persistent browser profile holds your live LinkedIn session — never commit.
 /profile/
 
+# SMTP credentials for notifications.
+.env
+
 # Python
 .venv/
 __pycache__/

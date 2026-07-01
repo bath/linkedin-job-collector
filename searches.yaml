@@ -10,8 +10,10 @@ searches:
 # Scroll/load behavior. "5 scrolls" from the original spec was a proxy for
 # "load enough posts" — these adaptive limits replace it.
 load:
-  target_posts: 50        # stop once this many posts are captured for a search
-  max_iterations: 8       # hard cap on scroll/show-more cycles
-  dry_scrolls_to_stop: 2  # stop early after this many cycles add nothing new
+  target_posts: 30        # stop once this many posts are captured for a search
+  max_iterations: 18      # hard cap on scroll cycles (pagination yields ~3/scroll)
+  dry_scrolls_to_stop: 3  # stop early after this many cycles add nothing new
+                          # (only counts once >=1 post has rendered)
+  results_wait_ms: 25000  # wait up to this long for results to first render
   min_wait_ms: 2500       # jittered wait between scrolls
   max_wait_ms: 5000
