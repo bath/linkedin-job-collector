@@ -85,17 +85,16 @@ agents and scripts:
 ```
 
 Optional: install the bare `jobs` command in zsh. `jobs` is a shell builtin, so a
-plain symlink on `$PATH` will usually not win command lookup. Add a shell function
-instead:
+plain symlink on `$PATH` will usually not win command lookup. Install the managed
+shell function instead:
 
 ```sh
-cat >> ~/.zshrc <<'EOF'
-jobs() {
-  "$HOME/repos/linkedin-job-collector/jobs" "$@"
-}
-EOF
+./jobs install-shell
 source ~/.zshrc
 ```
+
+After this, `jobs` runs the collector. If you need zsh's original job-listing
+builtin, run `builtin jobs`.
 
 After that, run:
 

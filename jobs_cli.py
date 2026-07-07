@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "doctor":
         return doctor_main(argv[1:])
+    if argv and argv[0] == "install-shell":
+        return install_shell_main(argv[1:])
     if argv and argv[0] == "update":
         return update_main(argv[1:])
 
@@ -148,6 +150,34 @@ def doctor_main(argv: list[str]) -> int:
             if check.get("hint"):
                 print(f"  hint: {check['hint']}")
     return 0 if ok else 1
+
+
+def install_shell_main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="jobs install-shell",
+        description="Install a zsh function so bare `jobs` runs this collector instead of the shell builtin.",
+    )
+    ap.add_argument("--shell-rc", default=str(Path.home() / ".zshrc"), help="shell rc file to update")
+    ap.add_argument("--json", action="store_true", help="emit machine-readable output")
+    args = ap.parse_args(argv)
+
+    rc_path = Path(args.shell_rc).expanduser()
+    changed = install_shell_function(rc_path, ROOT / "jobs")
+    payload = {
+        "ok": True,
+        "changed": changed,
+        "shell_rc": str(rc_path),
+        "command": "jobs",
+        "target": str((ROOT / "jobs").resolve()),
+        "hint": "Open a new terminal or run `source ~/.zshrc`. Use `builtin jobs` for the zsh builtin.",
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        status = "Installed" if changed else "Already installed"
+        print(f"{status} `jobs` shell function in {rc_path}")
+        print(payload["hint"])
+    return 0
 
 
 def update_main(argv: list[str]) -> int:
@@ -212,6 +242,42 @@ def run_doctor_checks(skip_network: bool = False) -> list[dict]:
             ]
         )
     return checks
+
+
+SHELL_BLOCK_START = "# >>> linkedin-job-collector jobs >>>"
+SHELL_BLOCK_END = "# <<< linkedin-job-collector jobs <<<"
+
+
+def shell_function_block(jobs_path: Path) -> str:
+    return (
+        f"{SHELL_BLOCK_START}\n"
+        "# Managed by `jobs install-shell`. This overrides zsh's builtin `jobs`.\n"
+        "jobs() {\n"
+        f"  {json.dumps(str(jobs_path.resolve()))} \"$@\"\n"
+        "}\n"
+        f"{SHELL_BLOCK_END}\n"
+    )
+
+
+def install_shell_function(rc_path: Path, jobs_path: Path) -> bool:
+    block = shell_function_block(jobs_path)
+    existing = rc_path.read_text() if rc_path.exists() else ""
+    if block in existing:
+        return False
+    if SHELL_BLOCK_START in existing and SHELL_BLOCK_END in existing:
+        before, rest = existing.split(SHELL_BLOCK_START, 1)
+        _, after = rest.split(SHELL_BLOCK_END, 1)
+        prefix = before.rstrip()
+        suffix = after.lstrip()
+        updated = (prefix + "\n\n" if prefix else "") + block + suffix
+    else:
+        separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
+        updated = existing + separator + block
+    if updated == existing:
+        return False
+    rc_path.parent.mkdir(parents=True, exist_ok=True)
+    rc_path.write_text(updated)
+    return True
 
 
 def check_required_files() -> dict:
@@ -548,8 +614,15 @@ def run_tui() -> dict:
     return curses.wrapper(_run_tui)
 
 
+def safe_curs_set(visibility: int) -> None:
+    try:
+        curses.curs_set(visibility)
+    except curses.error:
+        pass
+
+
 def _run_tui(stdscr) -> dict:
-    curses.curs_set(0)
+    safe_curs_set(0)
     query_idx = select_option(stdscr, "What type of job should we query?", QUERY_OPTIONS)
     query = QUERY_OPTIONS[query_idx]
 
@@ -587,14 +660,14 @@ def select_option(stdscr, title: str, options: list[QueryOption] | list[HarnessO
 
 
 def prompt_text(stdscr, label: str) -> str:
-    curses.curs_set(1)
+    safe_curs_set(1)
     stdscr.erase()
     stdscr.addstr(0, 0, f"{label}: ")
     stdscr.refresh()
     curses.echo()
     value = stdscr.getstr(0, len(label) + 2).decode("utf-8").strip()
     curses.noecho()
-    curses.curs_set(0)
+    safe_curs_set(0)
     if not value:
         raise SystemExit(f"jobs: {label} is required")
     return value
