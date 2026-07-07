@@ -11,6 +11,7 @@ Gmail address + app password is all you need — no API keys, no extra deps.
 """
 from __future__ import annotations
 
+import json
 import os
 import smtplib
 import sqlite3
@@ -58,18 +59,39 @@ def _send(subject: str, body: str) -> bool:
 
 def _format_post(r: sqlite3.Row) -> str:
     author = r["author"] or "unknown"
-    headline = (r["headline"] or "").strip()
-    text = (r["text"] or "").strip()
-    if len(text) > 600:
-        text = text[:600].rstrip() + "…"
+    hook = (r["digest_hook"] or "").strip()
+    facts = _facts(r["digest_facts"])
+
     lines = [f"• {author}"]
-    if headline:
-        lines.append(f"  {headline}")
-    if text:
-        lines.append(f"  {text}")
+    if hook:
+        lines.append(f"  Hook: {hook}")
+    if facts:
+        lines.append("  Facts:")
+        lines.extend(f"  - {fact}" for fact in facts[:10])
+    if not hook and not facts:
+        headline = (r["headline"] or "").strip()
+        text = (r["text"] or "").strip()
+        if len(text) > 240:
+            text = text[:240].rstrip() + "..."
+        if headline:
+            lines.append(f"  {headline}")
+        if text:
+            lines.append(f"  {text}")
     if r["url"]:
         lines.append(f"  {r['url']}")
     return "\n".join(lines)
+
+
+def _facts(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [fact for fact in data if isinstance(fact, str) and fact.strip()]
 
 
 def notify_new_matches(store: Store) -> int:
@@ -86,7 +108,7 @@ def notify_new_matches(store: Store) -> int:
     subject = f"[LinkedIn] {n} new matching post{'s' if n != 1 else ''}"
     header = (
         f"{n} post{'s' if n != 1 else ''} matched your criteria. "
-        "Open the post and DM the recruiter to get your foot in the door.\n\n"
+        "Each includes a hook plus applicant facts before you open the post.\n\n"
     )
     body = header + ("\n\n".join(_format_post(r) for r in rows)) + "\n"
 

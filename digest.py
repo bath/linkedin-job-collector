@@ -35,6 +35,13 @@ class ProviderAttempt:
     stderr: str
 
 
+@dataclass(frozen=True)
+class DigestSummary:
+    urn: str
+    hook: str
+    facts: list[str]
+
+
 def run_digest(store: Store, out_dir: Path, ts: str) -> Path | None:
     rows = store.unjudged()
     if not rows:
@@ -56,7 +63,7 @@ def run_digest(store: Store, out_dir: Path, ts: str) -> Path | None:
 
     try:
         provider, raw = _run_selected_provider(payload)
-        kept_urns, markdown = _parse_response(raw)
+        kept_urns, markdown, summaries = _parse_response(raw)
     except DigestProviderError as exc:
         print(f"digest: {exc}")
         return None
@@ -65,6 +72,13 @@ def run_digest(store: Store, out_dir: Path, ts: str) -> Path | None:
     kept = set(kept_urns)
     for r in rows:
         store.set_verdict(r["urn"], "kept" if r["urn"] in kept else "dropped")
+        summary = summaries.get(r["urn"])
+        if summary:
+            store.set_digest_summary(
+                r["urn"],
+                summary.hook,
+                json.dumps(summary.facts, ensure_ascii=False),
+            )
 
     digest_path = out_dir / f"digest-{ts}.md"
     digest_path.write_text(markdown or raw)
@@ -138,8 +152,16 @@ def _format_attempt_failure(attempt: ProviderAttempt) -> str:
     return f"{attempt.name} failed (rc={attempt.returncode}): {output}"
 
 
-def _parse_response(raw: str) -> tuple[list[str], str]:
-    """Expect a fenced ```json {"kept": [...]} ``` block plus markdown."""
+def _parse_response(raw: str) -> tuple[list[str], str, dict[str, DigestSummary]]:
+    """Expect a fenced JSON block plus markdown.
+
+    Preferred shape:
+      {"kept": [{"urn": "...", "hook": "...", "facts": ["..."]}]}
+
+    A legacy string-list kept array is still accepted so old stubs and ad-hoc
+    harness tests fail open for notification fallback instead of blocking digest
+    verdicts entirely.
+    """
     if "```json" not in raw:
         raise DigestProviderError("missing fenced JSON block")
     try:
@@ -149,8 +171,28 @@ def _parse_response(raw: str) -> tuple[list[str], str]:
         raise DigestProviderError(f"invalid JSON block: {exc}") from exc
 
     kept = data.get("kept")
-    if not isinstance(kept, list) or not all(isinstance(urn, str) for urn in kept):
-        raise DigestProviderError("JSON block must contain a string-list `kept` field")
+    if not isinstance(kept, list):
+        raise DigestProviderError("JSON block must contain a list `kept` field")
+
+    kept_urns: list[str] = []
+    summaries: dict[str, DigestSummary] = {}
+    for item in kept:
+        if isinstance(item, str):
+            kept_urns.append(item)
+            continue
+        if not isinstance(item, dict):
+            raise DigestProviderError("`kept` entries must be strings or objects")
+        urn = item.get("urn")
+        hook = item.get("hook", "")
+        facts = item.get("facts", [])
+        if not isinstance(urn, str):
+            raise DigestProviderError("kept object missing string `urn`")
+        if not isinstance(hook, str):
+            raise DigestProviderError("kept object `hook` must be a string")
+        if not isinstance(facts, list) or not all(isinstance(fact, str) for fact in facts):
+            raise DigestProviderError("kept object `facts` must be a string list")
+        kept_urns.append(urn)
+        summaries[urn] = DigestSummary(urn=urn, hook=hook.strip(), facts=[fact.strip() for fact in facts if fact.strip()])
 
     md = raw.split("```", 2)[-1].strip() or raw
-    return kept, md
+    return kept_urns, md, summaries

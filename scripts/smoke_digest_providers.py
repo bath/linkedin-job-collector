@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import sys
@@ -98,10 +99,12 @@ def main() -> int:
             verdicts = _verdicts(store.conn)
             missing_keep = sorted(urn for urn in MUST_KEEP if verdicts.get(urn) != "kept")
             missing_drop = sorted(urn for urn in MUST_DROP if verdicts.get(urn) != "dropped")
-            if missing_keep or missing_drop:
+            missing_summary = sorted(_missing_summaries(store.conn, MUST_KEEP))
+            if missing_keep or missing_drop or missing_summary:
                 print(f"smoke: provider={args.provider} produced lacking results", file=sys.stderr)
                 print(f"  expected kept but did not keep: {missing_keep}", file=sys.stderr)
                 print(f"  expected dropped but did not drop: {missing_drop}", file=sys.stderr)
+                print(f"  kept posts missing hook or 5+ facts: {missing_summary}", file=sys.stderr)
                 print(digest_path.read_text(), file=sys.stderr)
                 return 2
 
@@ -119,6 +122,25 @@ def _verdicts(conn: sqlite3.Connection) -> dict[str, str | None]:
         row["urn"]: row["digest_verdict"]
         for row in conn.execute("SELECT urn, digest_verdict FROM posts")
     }
+
+
+def _missing_summaries(conn: sqlite3.Connection, urns: set[str]) -> list[str]:
+    missing = []
+    for urn in urns:
+        row = conn.execute(
+            "SELECT digest_hook, digest_facts FROM posts WHERE urn = ?",
+            (urn,),
+        ).fetchone()
+        if row is None or not (row["digest_hook"] or "").strip():
+            missing.append(urn)
+            continue
+        try:
+            facts = json.loads(row["digest_facts"] or "[]")
+        except json.JSONDecodeError:
+            facts = []
+        if not isinstance(facts, list) or len([f for f in facts if isinstance(f, str) and f.strip()]) < 5:
+            missing.append(urn)
+    return missing
 
 
 if __name__ == "__main__":
