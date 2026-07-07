@@ -17,9 +17,26 @@ jobs update
 jobs doctor
 ```
 
-From a fresh checkout:
+Fresh install from the latest release:
 
 ```sh
+mkdir -p ~/repos/linkedin-job-collector
+cd ~/repos/linkedin-job-collector
+gh release download --repo bath/linkedin-job-collector --pattern '*.tar.gz'
+tar -xzf linkedin-job-collector-*.tar.gz
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+git clone git@github.com:bath/linkedin-job-data.git data
+cp .env.example .env
+```
+
+Or use a source checkout for development:
+
+```sh
+git clone git@github.com:bath/linkedin-job-collector.git
+cd linkedin-job-collector
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
