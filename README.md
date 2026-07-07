@@ -110,8 +110,9 @@ LJC_DIGEST_PROVIDER=cursor  # force Cursor Agent
 
 Default models are intentionally the minimum expected to work well for this
 classification task: `LJC_CLAUDE_MODEL=haiku` and
-`LJC_CURSOR_MODEL=composer-2.5`. Before trusting a lower-cost model, run the
-synthetic quality smoke:
+`LJC_CURSOR_MODEL=composer-2.5`. Cursor Composer 2.5 is the default Cursor
+harness option. Before trusting a lower-cost model, run the synthetic quality
+smoke:
 
 ```sh
 python scripts/smoke_digest_providers.py --provider claude

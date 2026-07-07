@@ -80,7 +80,7 @@ QUERY_OPTIONS = [
 HARNESS_OPTIONS = [
     HarnessOption("auto", "Auto", "Try Claude, then Cursor if Claude fails."),
     HarnessOption("claude", "Claude", "Force Claude Code digest filtering."),
-    HarnessOption("cursor", "Cursor", "Force Cursor Agent digest filtering."),
+    HarnessOption("cursor", "Cursor (Composer 2.5)", "Force Cursor Agent with the Composer 2.5 default."),
 ]
 
 

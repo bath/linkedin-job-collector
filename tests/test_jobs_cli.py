@@ -10,6 +10,7 @@ def test_build_selection_uses_prebuilt_query_and_harness():
     assert selection["query"]["id"] == "remote-platform"
     assert "platform" in selection["query"]["url"]
     assert selection["harness"]["id"] == "cursor"
+    assert selection["harness"]["label"] == "Cursor (Composer 2.5)"
     assert selection["command"][-1] == "cursor"
     assert selection["command"][0].endswith("python")
 
