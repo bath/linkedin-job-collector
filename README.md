@@ -42,6 +42,25 @@ playwright install chromium
 git clone git@github.com:bath/linkedin-job-data.git data
 ```
 
+## Releases
+
+Every push to `main` runs tests and publishes a GitHub Release named
+`main-<run-number>-<short-sha>`. The release contains:
+
+- `linkedin-job-collector-<version>.tar.gz` — distributable bundle with `jobs`
+  and the supporting Python project files
+- `linkedin-job-collector-<version>.tar.gz.sha256` — checksum
+
+Download the latest release:
+
+```sh
+gh release download --repo bath/linkedin-job-collector --pattern '*.tar.gz'
+tar -xzf linkedin-job-collector-*.tar.gz
+```
+
+Then follow the bundle's `INSTALL.md` to create the venv, install dependencies,
+clone the private `data/` repo, and run `./jobs`.
+
 ## Run
 
 ```sh
