@@ -46,11 +46,22 @@ git clone git@github.com:bath/linkedin-job-data.git data
 python bot.py                 # run searches, store new posts, write a digest
 python bot.py --no-digest     # scrape + store only
 python bot.py --reparse data/artifacts/<ts>   # rebuild from saved captures, no scraping
+./jobs                        # guided TUI: pick query type + digest harness
 ```
 
 First run opens a real Chromium window. Log into LinkedIn **by hand** — the bot
 never automates login and will wait at the auth wall. Your session persists in
 `profile/` for later runs.
+
+For ad-hoc runs, `jobs` gives you an arrow-key selector for prebuilt searches,
+custom searches, and the digest harness. It also has a noninteractive dry-run for
+agents and scripts:
+
+```sh
+./jobs --query remote-swe --harness auto --dry-run --json
+./jobs --custom-query "founding engineer remote" --harness cursor
+./jobs --custom-url "https://www.linkedin.com/search/results/content/?..." --harness claude
+```
 
 Then commit the new data in the private repo:
 

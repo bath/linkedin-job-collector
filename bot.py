@@ -54,6 +54,18 @@ def load_config() -> dict:
     return yaml.safe_load((ROOT / "searches.yaml").read_text())
 
 
+def selected_config(args: argparse.Namespace) -> dict:
+    cfg = load_config()
+    if args.search_url:
+        cfg["searches"] = [
+            {
+                "name": args.search_name or "custom",
+                "url": args.search_url,
+            }
+        ]
+    return cfg
+
+
 def ensure_data_repo() -> None:
     if not DATA.exists():
         sys.exit(
@@ -195,6 +207,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-digest", action="store_true", help="skip the claude filter step")
     ap.add_argument("--reparse", metavar="DIR", help="rebuild from a saved artifacts dir, no scraping")
+    ap.add_argument("--search-name", help="override searches.yaml with a single search name")
+    ap.add_argument("--search-url", help="override searches.yaml with a single LinkedIn content search URL")
+    ap.add_argument(
+        "--digest-provider",
+        choices=("auto", "claude", "cursor"),
+        help="override LJC_DIGEST_PROVIDER for this run",
+    )
     ap.add_argument(
         "--unattended",
         action="store_true",
@@ -206,8 +225,13 @@ def main() -> None:
         reparse(args.reparse)
         return
 
+    if args.digest_provider:
+        import os
+
+        os.environ["LJC_DIGEST_PROVIDER"] = args.digest_provider
+
     ensure_data_repo()
-    cfg = load_config()
+    cfg = selected_config(args)
     load = cfg["load"]
     ts = _ts()
     artifact_dir = ARTIFACTS / ts
