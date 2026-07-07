@@ -24,6 +24,21 @@ def test_build_selection_supports_custom_query():
     assert "founding%20engineer%20remote" in selection["query"]["url"]
 
 
+def test_build_selection_supports_sf_startup_presets():
+    expected_keywords = {
+        "sf-swe": "hiring%20software%20engineer%20sf",
+        "san-francisco-swe": "hiring%20software%20engineer%20san%20francisco",
+        "sf-seed-swe": "hiring%20software%20engineer%20sf%20seed%20startup",
+        "sf-series-a-swe": "hiring%20software%20engineer%20san%20francisco%20series%20a%20startup",
+    }
+
+    for query_id, encoded_keywords in expected_keywords.items():
+        selection = jobs_cli.build_selection(query_id, "auto", None, None)
+
+        assert selection["query"]["id"] == query_id
+        assert encoded_keywords in selection["query"]["url"]
+
+
 def test_dry_run_json_output(capsys):
     rc = jobs_cli.main(["--query", "remote-swe", "--harness", "claude", "--dry-run", "--json"])
 

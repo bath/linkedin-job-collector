@@ -72,6 +72,30 @@ QUERY_OPTIONS = [
         description="Data platform, pipelines, analytics infra, Airflow/dbt style roles.",
     ),
     QueryOption(
+        id="sf-swe",
+        label="Software engineer SF",
+        url=linkedin_search_url("hiring software engineer sf"),
+        description="Broad SF software engineering hiring posts from the past week.",
+    ),
+    QueryOption(
+        id="san-francisco-swe",
+        label="Software engineer San Francisco",
+        url=linkedin_search_url("hiring software engineer san francisco"),
+        description="Broad San Francisco software engineering hiring posts from the past week.",
+    ),
+    QueryOption(
+        id="sf-seed-swe",
+        label="SF seed-stage software engineer",
+        url=linkedin_search_url("hiring software engineer sf seed startup"),
+        description="SF startup SWE posts with seed-stage signals.",
+    ),
+    QueryOption(
+        id="sf-series-a-swe",
+        label="SF Series A software engineer",
+        url=linkedin_search_url("hiring software engineer san francisco series a startup"),
+        description="SF startup SWE posts with Series A signals.",
+    ),
+    QueryOption(
         id="custom-query",
         label="Custom LinkedIn keyword search",
         url=None,
