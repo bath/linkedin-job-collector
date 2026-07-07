@@ -17,7 +17,7 @@ linkedin-job-collector/        # this repo (public, code only)
 ├── bot.py            # orchestration: scroll, capture, store, digest, notify
 ├── extract.py        # RSC/SDUI payloads -> posts
 ├── store.py          # SQLite (schema is the durable contract)
-├── digest.py         # claude -p filter -> ranked digest.md
+├── digest.py         # Claude/Cursor filter -> ranked digest.md
 ├── notify.py         # email new matches / re-auth alerts (SMTP)
 ├── searches.yaml     # which searches to run + scroll limits
 ├── prompts/filter.md # the filter prompt (your match criteria)
@@ -60,10 +60,31 @@ cd data && git add -A && git commit -m "run <ts>" && git push
 
 ## Your criteria live in the filter prompt
 
-What counts as a match is decided entirely by `prompts/filter.md` — the `claude -p`
-filter reads it and returns which posts to keep. Tighten it to your exact "I'd DM
-this recruiter" bar (role, seniority, comp signals, keywords, red flags). The
+What counts as a match is decided entirely by `prompts/filter.md` — the digest
+provider reads it and returns which posts to keep. Tighten it to your exact "I'd
+DM this recruiter" bar (role, seniority, comp signals, keywords, red flags). The
 narrower the prompt, the fewer false-positive emails.
+
+`digest.py` supports three provider modes:
+
+```sh
+LJC_DIGEST_PROVIDER=auto    # default: try Claude, then Cursor if Claude fails
+LJC_DIGEST_PROVIDER=claude  # force Claude Code
+LJC_DIGEST_PROVIDER=cursor  # force Cursor Agent
+```
+
+Default models are intentionally the minimum expected to work well for this
+classification task: `LJC_CLAUDE_MODEL=haiku` and
+`LJC_CURSOR_MODEL=composer-2.5`. Before trusting a lower-cost model, run the
+synthetic quality smoke:
+
+```sh
+python scripts/smoke_digest_providers.py --provider claude
+python scripts/smoke_digest_providers.py --provider cursor
+```
+
+The smoke must keep concrete remote SWE hiring posts and drop non-SWE/non-remote
+or vendor-marketing posts. If a model fails that bar, override it in `.env`.
 
 ## Email notifications
 
