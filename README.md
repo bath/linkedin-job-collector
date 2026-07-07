@@ -19,6 +19,8 @@ linkedin-job-collector/        # this repo (public, code only)
 ├── store.py          # SQLite (schema is the durable contract)
 ├── digest.py         # Claude/Cursor filter -> ranked digest.md
 ├── notify.py         # email new matches / re-auth alerts (SMTP)
+├── jobs              # guided TUI / binary-style entrypoint
+├── jobs_cli.py       # TUI + noninteractive CLI implementation
 ├── searches.yaml     # which searches to run + scroll limits
 ├── prompts/filter.md # the filter prompt (your match criteria)
 ├── deploy/           # launchd job + run.sh wrapper for scheduling
@@ -61,6 +63,28 @@ agents and scripts:
 ./jobs --query remote-swe --harness auto --dry-run --json
 ./jobs --custom-query "founding engineer remote" --harness cursor
 ./jobs --custom-url "https://www.linkedin.com/search/results/content/?..." --harness claude
+```
+
+Optional: install the bare `jobs` command in zsh. `jobs` is a shell builtin, so a
+plain symlink on `$PATH` will usually not win command lookup. Add a shell function
+instead:
+
+```sh
+cat >> ~/.zshrc <<'EOF'
+jobs() {
+  "$HOME/repos/linkedin-job-collector/jobs" "$@"
+}
+EOF
+source ~/.zshrc
+```
+
+After that, run:
+
+```sh
+jobs
+jobs --query remote-data --harness auto
+jobs --custom-query "founding engineer remote" --harness cursor
+jobs --query remote-swe --harness auto --dry-run --json
 ```
 
 Then commit the new data in the private repo:
