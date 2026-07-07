@@ -20,6 +20,20 @@ jobs doctor
 Fresh install from the latest release:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/bath/linkedin-job-collector/main/scripts/install_latest.sh | bash
+```
+
+Then fill in `~/repos/linkedin-job-collector/.env` and run:
+
+```sh
+source ~/.zshrc
+jobs doctor
+jobs
+```
+
+Manual release install:
+
+```sh
 mkdir -p ~/repos/linkedin-job-collector
 cd ~/repos/linkedin-job-collector
 gh release download --repo bath/linkedin-job-collector --pattern '*.tar.gz'
@@ -30,9 +44,10 @@ pip install -r requirements.txt
 playwright install chromium
 git clone git@github.com:bath/linkedin-job-data.git data
 cp .env.example .env
+./jobs install-shell
 ```
 
-Or use a source checkout for development:
+Source checkout for development:
 
 ```sh
 git clone git@github.com:bath/linkedin-job-collector.git
@@ -43,21 +58,6 @@ pip install -r requirements.txt
 playwright install chromium
 git clone git@github.com:bath/linkedin-job-data.git data
 cp .env.example .env
-```
-
-Fill in SMTP/email values in `.env`, then install the bare `jobs` command for
-zsh:
-
-```sh
-./jobs install-shell
-source ~/.zshrc
-jobs doctor
-```
-
-Run it:
-
-```sh
-jobs
 ```
 
 The first scrape opens Chromium. Log into LinkedIn manually; the session is kept

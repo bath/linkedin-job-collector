@@ -38,6 +38,7 @@ for path in \
   searches.yaml \
   prompts \
   deploy \
+  scripts/install_latest.sh \
   scripts/package_release.sh \
   scripts/smoke_digest_providers.py
 do
@@ -48,7 +49,13 @@ cat > "${bundle_dir}/INSTALL.md" <<'EOF'
 # Install
 
 This release bundle contains the `jobs` executable plus the Python project files it
-uses at runtime.
+uses at runtime. The easiest install path is:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bath/linkedin-job-collector/main/scripts/install_latest.sh | bash
+```
+
+Manual bundle setup:
 
 ```sh
 python3 -m venv .venv
@@ -63,12 +70,12 @@ git clone git@github.com:bath/linkedin-job-data.git data
 ./jobs
 ```
 
-For bare `jobs` in zsh, add a shell function because `jobs` is a shell builtin:
+For bare `jobs` in zsh, install the managed shell function because `jobs` is a
+shell builtin:
 
 ```sh
-jobs() {
-  "/path/to/linkedin-job-collector/jobs" "$@"
-}
+./jobs install-shell
+source ~/.zshrc
 ```
 EOF
 
