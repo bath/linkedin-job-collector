@@ -101,10 +101,21 @@ After that, run:
 
 ```sh
 jobs
+jobs doctor
 jobs update
 jobs --query remote-data --harness auto
 jobs --custom-query "founding engineer remote" --harness cursor
 jobs --query remote-swe --harness auto --dry-run --json
+```
+
+`jobs doctor` validates the local pipeline before you scrape: runtime files,
+Python/venv dependencies, Playwright Chromium, private `data/`, `.env`,
+LinkedIn `profile/`, command construction, latest GitHub Release reachability,
+and Claude/Cursor harness availability. Agent-friendly forms:
+
+```sh
+jobs doctor --json
+jobs doctor --skip-network --json
 ```
 
 `jobs update` downloads the latest GitHub Release bundle, verifies the checksum

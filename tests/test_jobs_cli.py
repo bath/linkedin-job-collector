@@ -74,6 +74,40 @@ def test_update_dry_run_json_output(monkeypatch, capsys, tmp_path):
     assert payload["install_dir"] == str(tmp_path.resolve())
 
 
+def test_doctor_json_output(monkeypatch, capsys):
+    monkeypatch.setattr(
+        jobs_cli,
+        "run_doctor_checks",
+        lambda skip_network=False: [
+            {"name": "required files", "status": "ok", "message": "present"},
+            {"name": "network checks", "status": "warn", "message": "skipped"},
+        ],
+    )
+
+    rc = jobs_cli.main(["doctor", "--skip-network", "--json"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["checks"][0]["name"] == "required files"
+
+
+def test_doctor_fails_on_failed_check(monkeypatch, capsys):
+    monkeypatch.setattr(
+        jobs_cli,
+        "run_doctor_checks",
+        lambda skip_network=False: [
+            {"name": "data repo", "status": "fail", "message": "missing data/"},
+        ],
+    )
+
+    rc = jobs_cli.main(["doctor", "--json"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+
+
 def test_verify_checksum_rejects_mismatch(tmp_path):
     archive = tmp_path / "bundle.tar.gz"
     checksum = tmp_path / "bundle.tar.gz.sha256"
