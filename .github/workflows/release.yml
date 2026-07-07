@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Package release bundle
+        id: package
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          version="main-${GITHUB_RUN_NUMBER}-${short_sha}"
+          mkdir -p dist
+          tarball="$(scripts/package_release.sh dist "${version}")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${version}" >> "$GITHUB_OUTPUT"
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${tarball}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.package.outputs.tag }}" \
+            "${{ steps.package.outputs.tarball }}" \
+            "${{ steps.package.outputs.checksum }}" \
+            --target "${GITHUB_SHA}" \
+            --title "linkedin-job-collector ${{ steps.package.outputs.version }}" \
+            --notes "Automated release for commit ${GITHUB_SHA} on main."
