@@ -38,6 +38,7 @@ for path in \
   searches.yaml \
   prompts \
   deploy \
+  scripts/package_release.sh \
   scripts/smoke_digest_providers.py
 do
   copy_path "${path}"

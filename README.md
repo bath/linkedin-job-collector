@@ -101,9 +101,19 @@ After that, run:
 
 ```sh
 jobs
+jobs update
 jobs --query remote-data --harness auto
 jobs --custom-query "founding engineer remote" --harness cursor
 jobs --query remote-swe --harness auto --dry-run --json
+```
+
+`jobs update` downloads the latest GitHub Release bundle, verifies the checksum
+when the `.sha256` asset is present, and installs it over the current project
+files. It does not remove local files that are not in the bundle, so your
+gitignored `.env`, `data/`, `profile/`, and venv stay local. Preview an update:
+
+```sh
+jobs update --dry-run --json
 ```
 
 Then commit the new data in the private repo:

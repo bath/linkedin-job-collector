@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import curses
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).parent
 BOT = ROOT / "bot.py"
 LINKEDIN_CONTENT_SEARCH = "https://www.linkedin.com/search/results/content/"
+GITHUB_REPO = "bath/linkedin-job-collector"
+GITHUB_API = "https://api.github.com"
 
 
 @dataclass(frozen=True)
@@ -85,6 +93,10 @@ HARNESS_OPTIONS = [
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "update":
+        return update_main(argv[1:])
+
     args = parse_args(argv)
     if args.list:
         return emit_selection(
@@ -110,6 +122,31 @@ def main(argv: list[str] | None = None) -> int:
     return run_bot(selection)
 
 
+def update_main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="jobs update",
+        description="Download and install the latest linkedin-job-collector release bundle.",
+    )
+    ap.add_argument("--repo", default=GITHUB_REPO, help="GitHub repo to update from")
+    ap.add_argument("--install-dir", default=str(ROOT), help="directory to update")
+    ap.add_argument("--dry-run", action="store_true", help="show what would be installed")
+    ap.add_argument("--json", action="store_true", help="emit machine-readable output")
+    args = ap.parse_args(argv)
+
+    try:
+        plan = build_update_plan(args.repo, Path(args.install_dir))
+        if args.dry_run:
+            return emit_update_result(plan, args.json, dry_run=True)
+        install_release(plan)
+        return emit_update_result(plan, args.json, dry_run=False)
+    except UpdateError as exc:
+        if args.json:
+            print(json.dumps({"error": {"code": "update_failed", "message": str(exc)}}))
+        else:
+            print(f"jobs update: {exc}", file=sys.stderr)
+        return 1
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         prog="jobs",
@@ -123,6 +160,124 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--json", action="store_true", help="emit machine-readable output")
     ap.add_argument("--list", action="store_true", help="list available options and exit")
     return ap.parse_args(argv)
+
+
+class UpdateError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class UpdatePlan:
+    repo: str
+    tag: str
+    release_url: str
+    asset_name: str
+    asset_url: str
+    checksum_url: str | None
+    install_dir: Path
+
+
+def build_update_plan(repo: str, install_dir: Path) -> UpdatePlan:
+    release = _github_json(f"{GITHUB_API}/repos/{repo}/releases/latest")
+    assets = release.get("assets", [])
+    tarball = next((asset for asset in assets if asset.get("name", "").endswith(".tar.gz")), None)
+    if not tarball:
+        raise UpdateError(f"latest release for {repo} has no .tar.gz asset")
+
+    checksum_name = f"{tarball['name']}.sha256"
+    checksum = next((asset for asset in assets if asset.get("name") == checksum_name), None)
+    return UpdatePlan(
+        repo=repo,
+        tag=release["tag_name"],
+        release_url=release["html_url"],
+        asset_name=tarball["name"],
+        asset_url=tarball["browser_download_url"],
+        checksum_url=checksum["browser_download_url"] if checksum else None,
+        install_dir=install_dir.resolve(),
+    )
+
+
+def install_release(plan: UpdatePlan) -> None:
+    plan.install_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="jobs-update-") as td:
+        tmp = Path(td)
+        archive = tmp / plan.asset_name
+        _download(plan.asset_url, archive)
+        if plan.checksum_url:
+            checksum = tmp / f"{plan.asset_name}.sha256"
+            _download(plan.checksum_url, checksum)
+            _verify_checksum(archive, checksum)
+
+        extract_dir = tmp / "extract"
+        extract_dir.mkdir()
+        _safe_extract(archive, extract_dir)
+        roots = [path for path in extract_dir.iterdir() if path.is_dir()]
+        if len(roots) != 1:
+            raise UpdateError("release archive must contain exactly one top-level directory")
+        _copy_tree_contents(roots[0], plan.install_dir)
+
+
+def emit_update_result(plan: UpdatePlan, json_output: bool, dry_run: bool) -> int:
+    payload = {
+        "dry_run": dry_run,
+        "repo": plan.repo,
+        "tag": plan.tag,
+        "release_url": plan.release_url,
+        "asset": plan.asset_name,
+        "checksum": bool(plan.checksum_url),
+        "install_dir": str(plan.install_dir),
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2))
+    elif dry_run:
+        print(f"Would install {plan.asset_name} from {plan.tag} into {plan.install_dir}")
+    else:
+        print(f"Installed {plan.asset_name} from {plan.tag} into {plan.install_dir}")
+    return 0
+
+
+def _github_json(url: str) -> dict:
+    req = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "linkedin-job-collector"})
+    try:
+        with urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise UpdateError(f"failed to fetch {url}: {exc}") from exc
+
+
+def _download(url: str, path: Path) -> None:
+    req = Request(url, headers={"User-Agent": "linkedin-job-collector"})
+    try:
+        with urlopen(req, timeout=60) as resp, path.open("wb") as fh:
+            shutil.copyfileobj(resp, fh)
+    except Exception as exc:
+        raise UpdateError(f"failed to download {url}: {exc}") from exc
+
+
+def _verify_checksum(archive: Path, checksum_file: Path) -> None:
+    expected = checksum_file.read_text().split()[0]
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if digest != expected:
+        raise UpdateError(f"checksum mismatch for {archive.name}")
+
+
+def _safe_extract(archive: Path, destination: Path) -> None:
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            target = (destination / member.name).resolve()
+            if not str(target).startswith(str(destination.resolve()) + os.sep):
+                raise UpdateError(f"unsafe archive path: {member.name}")
+        tf.extractall(destination)
+
+
+def _copy_tree_contents(src: Path, dest: Path) -> None:
+    for child in src.iterdir():
+        target = dest / child.name
+        if child.is_dir():
+            target.mkdir(exist_ok=True)
+            _copy_tree_contents(child, target)
+        else:
+            shutil.copy2(child, target)
 
 
 def build_selection(
