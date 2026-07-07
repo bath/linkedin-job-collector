@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS posts (
     search_name    TEXT,               -- which searches.yaml entry surfaced it
     first_seen     TEXT NOT NULL,      -- ISO8601 UTC, when we first captured it
     digest_verdict TEXT,               -- filled by digest.py: kept | dropped | NULL (unjudged)
+    digest_hook    TEXT,               -- short application/outreach angle from digest.py
+    digest_facts   TEXT,               -- JSON list of applicant facts from digest.py
     notified_at    TEXT                -- ISO8601 UTC when a kept post was emailed; NULL = not yet
 );
 """
@@ -44,6 +46,10 @@ class Store:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(posts)")}
         if "notified_at" not in cols:
             self.conn.execute("ALTER TABLE posts ADD COLUMN notified_at TEXT")
+        if "digest_hook" not in cols:
+            self.conn.execute("ALTER TABLE posts ADD COLUMN digest_hook TEXT")
+        if "digest_facts" not in cols:
+            self.conn.execute("ALTER TABLE posts ADD COLUMN digest_facts TEXT")
 
     def upsert(self, post: dict, search_name: str) -> bool:
         """Insert a post if its URN is new. Returns True if newly inserted."""
@@ -78,6 +84,13 @@ class Store:
     def set_verdict(self, urn: str, verdict: str) -> None:
         self.conn.execute(
             "UPDATE posts SET digest_verdict = ? WHERE urn = ?", (verdict, urn)
+        )
+        self.conn.commit()
+
+    def set_digest_summary(self, urn: str, hook: str, facts_json: str) -> None:
+        self.conn.execute(
+            "UPDATE posts SET digest_hook = ?, digest_facts = ? WHERE urn = ?",
+            (hook, facts_json, urn),
         )
         self.conn.commit()
 

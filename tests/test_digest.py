@@ -35,16 +35,17 @@ def test_provider_commands_use_minimum_default_models(monkeypatch):
 
 def test_parse_response_requires_kept_json():
     raw = """```json
-{"kept": ["urn:li:activity:1"]}
+{"kept": [{"urn": "urn:li:activity:1", "hook": "Lead with API work.", "facts": ["Remote role.", "Python stack."]}]}
 ```
 
 **Company** - role
 """
 
-    assert digest._parse_response(raw) == (
-        ["urn:li:activity:1"],
-        "**Company** - role",
-    )
+    kept, markdown, summaries = digest._parse_response(raw)
+    assert kept == ["urn:li:activity:1"]
+    assert markdown == "**Company** - role"
+    assert summaries["urn:li:activity:1"].hook == "Lead with API work."
+    assert summaries["urn:li:activity:1"].facts == ["Remote role.", "Python stack."]
 
     with pytest.raises(digest.DigestProviderError):
         digest._parse_response("No JSON here")
@@ -63,7 +64,7 @@ def test_run_digest_falls_back_from_claude_to_cursor(tmp_path, monkeypatch):
         tmp_path / "fake-cursor",
         """
         print('''```json
-{"kept": ["urn:li:activity:keep"]}
+{"kept": [{"urn": "urn:li:activity:keep", "hook": "Open with Python API experience.", "facts": ["Remote role.", "Software engineering role.", "Python appears relevant."]}]}
 ```
 
 **Cohere Health** - remote software engineer role
@@ -109,6 +110,12 @@ def test_run_digest_falls_back_from_claude_to_cursor(tmp_path, monkeypatch):
         "urn:li:activity:keep": "kept",
         "urn:li:activity:drop": "dropped",
     }
+    summary = store.conn.execute(
+        "SELECT digest_hook, digest_facts FROM posts WHERE urn = ?",
+        ("urn:li:activity:keep",),
+    ).fetchone()
+    assert summary["digest_hook"] == "Open with Python API experience."
+    assert "Remote role." in summary["digest_facts"]
 
 
 def test_explicit_provider_does_not_fall_back(tmp_path, monkeypatch):
@@ -124,7 +131,7 @@ def test_explicit_provider_does_not_fall_back(tmp_path, monkeypatch):
         tmp_path / "fake-cursor",
         """
         print('''```json
-{"kept": ["urn:li:activity:keep"]}
+{"kept": [{"urn": "urn:li:activity:keep", "hook": "Open with Python API experience.", "facts": ["Remote role."]}]}
 ```
 
 **Cohere Health** - remote software engineer role

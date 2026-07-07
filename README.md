@@ -100,9 +100,10 @@ or vendor-marketing posts. If a model fails that bar, override it in `.env`.
 ## Email notifications
 
 When the filter keeps a post you haven't been emailed about, you get an email with
-the author, headline, a text snippet, and the post URL — so you can open it and DM
-the recruiter. Each kept post is emailed **once** (tracked by `notified_at` in the
-DB); a run whose send fails retries on the next run.
+a bare-bones application hook, 5-10 applicant facts, and the post URL — so you can
+quickly decide whether to apply or DM the recruiter. Each kept post is emailed
+**once** (tracked by `notified_at` in the DB); a run whose send fails retries on
+the next run.
 
 One-time setup — Gmail app password (any SMTP host works via the overrides):
 
