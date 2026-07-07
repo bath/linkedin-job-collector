@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import curses
 
 import jobs_cli
 from bot import selected_config
@@ -106,6 +107,44 @@ def test_doctor_fails_on_failed_check(monkeypatch, capsys):
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
+
+
+def test_install_shell_function_is_idempotent(tmp_path):
+    rc = tmp_path / ".zshrc"
+    jobs_path = tmp_path / "collector" / "jobs"
+    jobs_path.parent.mkdir()
+    jobs_path.write_text("#!/usr/bin/env python3\n")
+
+    assert jobs_cli.install_shell_function(rc, jobs_path) is True
+    first = rc.read_text()
+    assert "linkedin-job-collector jobs" in first
+    assert str(jobs_path.resolve()) in first
+    assert "builtin `jobs`" in first
+
+    assert jobs_cli.install_shell_function(rc, jobs_path) is False
+    assert rc.read_text() == first
+
+
+def test_install_shell_json_output(capsys, tmp_path):
+    rc = tmp_path / ".zshrc"
+    rc.write_text("# existing\n")
+
+    rc_code = jobs_cli.main(["install-shell", "--shell-rc", str(rc), "--json"])
+
+    assert rc_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["command"] == "jobs"
+    assert payload["shell_rc"] == str(rc)
+
+
+def test_safe_curs_set_ignores_terminal_errors(monkeypatch):
+    def raise_curses_error(_visibility):
+        raise curses.error("unsupported")
+
+    monkeypatch.setattr(jobs_cli.curses, "curs_set", raise_curses_error)
+
+    jobs_cli.safe_curs_set(0)
 
 
 def test_verify_checksum_rejects_mismatch(tmp_path):
