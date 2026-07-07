@@ -94,6 +94,8 @@ HARNESS_OPTIONS = [
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "doctor":
+        return doctor_main(argv[1:])
     if argv and argv[0] == "update":
         return update_main(argv[1:])
 
@@ -120,6 +122,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return emit_selection(selection, json_output=args.json, dry_run=True)
     return run_bot(selection)
+
+
+def doctor_main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="jobs doctor",
+        description="Validate that the local jobs collector can run end-to-end.",
+    )
+    ap.add_argument("--json", action="store_true", help="emit machine-readable output")
+    ap.add_argument(
+        "--skip-network",
+        action="store_true",
+        help="skip GitHub/Cursor/Claude network-auth checks",
+    )
+    args = ap.parse_args(argv)
+
+    checks = run_doctor_checks(skip_network=args.skip_network)
+    ok = all(check["status"] in ("ok", "warn") for check in checks)
+    if args.json:
+        print(json.dumps({"ok": ok, "checks": checks}, indent=2))
+    else:
+        for check in checks:
+            symbol = {"ok": "✓", "warn": "!", "fail": "✗"}[check["status"]]
+            print(f"{symbol} {check['name']}: {check['message']}")
+            if check.get("hint"):
+                print(f"  hint: {check['hint']}")
+    return 0 if ok else 1
 
 
 def update_main(argv: list[str]) -> int:
@@ -160,6 +188,176 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--json", action="store_true", help="emit machine-readable output")
     ap.add_argument("--list", action="store_true", help="list available options and exit")
     return ap.parse_args(argv)
+
+
+def run_doctor_checks(skip_network: bool = False) -> list[dict]:
+    checks = [
+        check_required_files(),
+        check_python_runtime(),
+        check_python_dependencies(),
+        check_playwright_browser(),
+        check_data_repo(),
+        check_env_file(),
+        check_profile_dir(),
+        check_jobs_dry_run(),
+    ]
+    if skip_network:
+        checks.append(_check("network checks", "warn", "skipped by --skip-network"))
+    else:
+        checks.extend(
+            [
+                check_github_release(),
+                check_cursor_agent(),
+                check_claude_cli(),
+            ]
+        )
+    return checks
+
+
+def check_required_files() -> dict:
+    required = [
+        "jobs",
+        "jobs_cli.py",
+        "bot.py",
+        "digest.py",
+        "extract.py",
+        "notify.py",
+        "store.py",
+        "prompts/filter.md",
+        "searches.yaml",
+    ]
+    missing = [path for path in required if not (ROOT / path).exists()]
+    if missing:
+        return _check("required files", "fail", f"missing {', '.join(missing)}")
+    return _check("required files", "ok", "all runtime files are present")
+
+
+def check_python_runtime() -> dict:
+    exe = python_executable()
+    if not Path(exe).exists():
+        return _check("python runtime", "fail", f"{exe} does not exist", "create the venv with python3 -m venv .venv")
+    proc = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=30)
+    version = (proc.stdout or proc.stderr).strip()
+    if proc.returncode != 0:
+        return _check("python runtime", "fail", f"{exe} failed: {version}")
+    return _check("python runtime", "ok", f"using {exe} ({version})")
+
+
+def check_python_dependencies() -> dict:
+    exe = python_executable()
+    code = (
+        "import importlib.util, json; "
+        "mods=['yaml','playwright']; "
+        "print(json.dumps([m for m in mods if importlib.util.find_spec(m) is None]))"
+    )
+    proc = subprocess.run([exe, "-c", code], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        return _check("python dependencies", "fail", (proc.stderr or proc.stdout).strip())
+    missing = json.loads(proc.stdout)
+    if missing:
+        return _check(
+            "python dependencies",
+            "fail",
+            f"missing {', '.join(missing)}",
+            "run: source .venv/bin/activate && pip install -r requirements.txt && playwright install chromium",
+        )
+    return _check("python dependencies", "ok", "PyYAML and Playwright imports are available")
+
+
+def check_playwright_browser() -> dict:
+    exe = python_executable()
+    code = (
+        "from pathlib import Path; "
+        "from playwright.sync_api import sync_playwright; "
+        "pw=sync_playwright().start(); "
+        "path=pw.chromium.executable_path; "
+        "pw.stop(); "
+        "print(path if Path(path).exists() else '')"
+    )
+    proc = subprocess.run([exe, "-c", code], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        return _check(
+            "Playwright Chromium",
+            "fail",
+            (proc.stderr or proc.stdout).strip(),
+            "run: source .venv/bin/activate && playwright install chromium",
+        )
+    path = proc.stdout.strip()
+    if not path:
+        return _check("Playwright Chromium", "fail", "Chromium executable not found", "run: playwright install chromium")
+    return _check("Playwright Chromium", "ok", f"Chromium is installed at {path}")
+
+
+def check_data_repo() -> dict:
+    data = ROOT / "data"
+    db = data / "posts.db"
+    if not data.exists():
+        return _check("data repo", "fail", "data/ is missing", "clone git@github.com:bath/linkedin-job-data.git data")
+    if not db.exists():
+        return _check("data repo", "warn", "data/ exists but posts.db is missing", "first scrape will create posts.db")
+    return _check("data repo", "ok", "data/ and posts.db are present")
+
+
+def check_env_file() -> dict:
+    env = ROOT / ".env"
+    if not env.exists():
+        return _check("env file", "warn", ".env is missing", "copy .env.example to .env and fill SMTP/Cursor settings")
+    text = env.read_text(errors="ignore")
+    configured = [name for name in ("LJC_SMTP_USER", "LJC_SMTP_PASS", "CURSOR_API_KEY") if name in text]
+    return _check("env file", "ok", f".env exists ({', '.join(configured) or 'no known keys detected'})")
+
+
+def check_profile_dir() -> dict:
+    profile = ROOT / "profile"
+    if not profile.exists():
+        return _check("LinkedIn profile", "warn", "profile/ is missing", "first headed run will create it; log into LinkedIn by hand")
+    return _check("LinkedIn profile", "ok", "profile/ exists")
+
+
+def check_jobs_dry_run() -> dict:
+    try:
+        selection = build_selection("remote-swe", "auto", None, None)
+    except Exception as exc:
+        return _check("jobs dry run", "fail", f"selection failed: {exc}")
+    if "--digest-provider" not in selection["command"]:
+        return _check("jobs dry run", "fail", "generated command is missing digest provider")
+    return _check("jobs dry run", "ok", "can build a scraper command")
+
+
+def check_github_release() -> dict:
+    try:
+        plan = build_update_plan(GITHUB_REPO, ROOT)
+    except UpdateError as exc:
+        return _check("GitHub release", "fail", str(exc), "check network access and GitHub release assets")
+    return _check("GitHub release", "ok", f"latest release {plan.tag} has {plan.asset_name}")
+
+
+def check_cursor_agent() -> dict:
+    cursor = shutil.which("cursor")
+    if not cursor:
+        return _check("Cursor harness", "warn", "cursor CLI is not on PATH", "install Cursor CLI or use Claude/auto")
+    proc = subprocess.run(["cursor", "agent", "status"], capture_output=True, text=True, timeout=30)
+    output = (proc.stdout or proc.stderr).strip()
+    if proc.returncode != 0 or "Not logged in" in output:
+        return _check("Cursor harness", "warn", output or "not logged in", "run: cursor agent login")
+    return _check("Cursor harness", "ok", output or "cursor agent is authenticated")
+
+
+def check_claude_cli() -> dict:
+    claude = shutil.which("claude")
+    if not claude:
+        return _check("Claude harness", "warn", "claude CLI is not on PATH", "install Claude Code or use Cursor")
+    proc = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        return _check("Claude harness", "warn", (proc.stderr or proc.stdout).strip(), "check Claude Code auth/quota")
+    return _check("Claude harness", "ok", (proc.stdout or proc.stderr).strip())
+
+
+def _check(name: str, status: str, message: str, hint: str | None = None) -> dict:
+    result = {"name": name, "status": status, "message": message}
+    if hint:
+        result["hint"] = hint
+    return result
 
 
 class UpdateError(Exception):
